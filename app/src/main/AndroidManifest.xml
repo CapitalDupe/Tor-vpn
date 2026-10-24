@@ -15,8 +15,8 @@
     <application
         android:allowBackup="false"
         android:label="@string/app_name"
-        android:icon="@android:drawable/ic_lock_lock"
-        android:theme="@style/Theme.Material3.DayNight">
+        android:icon="@drawable/ic_launcher_onion"
+        android:theme="@style/Theme.TorChain">
 
         <activity
             android:name=".MainActivity"

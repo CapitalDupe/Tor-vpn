@@ -4,15 +4,19 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
+import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
-import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Spinner
@@ -25,14 +29,19 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.button.MaterialButton
 
 class MainActivity : AppCompatActivity() {
 
     /** Only the user's own hops. Tor is controlled by the switch and always goes first. */
     private val chain = mutableListOf<ProxyHop>()
     private lateinit var adapter: ProxyAdapter
+    private lateinit var orb: TextView
     private lateinit var statusText: TextView
+    private lateinit var subText: TextView
+    private lateinit var emptyText: TextView
     private lateinit var torSwitch: Switch
+    private var permissionDenied = false
 
     private val ui = Handler(Looper.getMainLooper())
     private val statusPoller = object : Runnable {
@@ -48,13 +57,39 @@ class MainActivity : AppCompatActivity() {
         if (result.resultCode == Activity.RESULT_OK) {
             startVpnService()
         } else {
-            statusText.text = "Status: VPN permission denied"
+            permissionDenied = true
+            refreshStatus()
         }
     }
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* the VPN works either way; the notification just may be hidden */ }
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun col(id: Int) = ContextCompat.getColor(this, id)
+
+    private fun roundedBg(fill: Int, radiusDp: Int = 16) = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        setColor(fill)
+        cornerRadius = dp(radiusDp).toFloat()
+    }
+
+    private fun ovalBg(fill: Int, stroke: Int) = GradientDrawable().apply {
+        shape = GradientDrawable.OVAL
+        setColor(fill)
+        setStroke(dp(4), stroke)
+    }
+
+    private fun pillButton(label: String, fill: Int, textColor: Int, onClick: () -> Unit) =
+        MaterialButton(this).apply {
+            text = label
+            isAllCaps = false
+            setTextColor(textColor)
+            backgroundTintList = ColorStateList.valueOf(fill)
+            cornerRadius = dp(24)
+            setOnClickListener { onClick() }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,56 +99,122 @@ class MainActivity : AppCompatActivity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 64, 32, 32)
+            setBackgroundColor(col(R.color.bg))
+            setPadding(dp(20), dp(40), dp(20), dp(16))
         }
 
-        statusText = TextView(this).apply { text = "Status: disconnected"; textSize = 16f }
+        // Title
+        root.addView(TextView(this).apply {
+            text = "Tor Proxy Chain"
+            textSize = 22f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setTextColor(col(R.color.text))
+        })
+
+        // Big round connect button, Orbot style
+        orb = TextView(this).apply {
+            gravity = Gravity.CENTER
+            textSize = 20f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.12f
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onOrbClicked() }
+        }
+        root.addView(orb, LinearLayout.LayoutParams(dp(170), dp(170)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            topMargin = dp(24)
+            bottomMargin = dp(16)
+        })
+
+        statusText = TextView(this).apply {
+            textSize = 20f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setTextColor(col(R.color.text))
+        }
         root.addView(statusText)
 
-        torSwitch = Switch(this).apply {
-            text = "Route through Tor first (requires Orbot)"
-            isChecked = saved.any { it.isTor }
-            setOnCheckedChangeListener { _, _ -> persist() }
+        subText = TextView(this).apply {
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(4), 0, dp(16))
+            setTextColor(col(R.color.text_dim))
         }
-        root.addView(torSwitch)
+        root.addView(subText)
 
-        root.addView(TextView(this).apply {
-            text = "Order: Tor (if on) → hop 1 → hop 2 → … → destination.\nLong-press a hop to move or remove it."
+        // Tor card
+        val torCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg(col(R.color.surface))
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+        torSwitch = Switch(this).apply {
+            text = "Route through Tor first"
+            textSize = 16f
+            setTextColor(col(R.color.text))
+            isChecked = saved.any { it.isTor }
+            val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
+            thumbTintList = ColorStateList(states, intArrayOf(col(R.color.purple_light), col(R.color.text_dim)))
+            trackTintList = ColorStateList(states, intArrayOf(col(R.color.purple), col(R.color.surface_high)))
+            setOnCheckedChangeListener { _, _ -> persist(); refreshStatus() }
+        }
+        torCard.addView(torSwitch)
+        torCard.addView(TextView(this).apply {
+            text = "Requires the Orbot app. Order: Tor \u2192 hop 1 \u2192 hop 2 \u2192 destination."
             textSize = 12f
-            setPadding(0, 16, 0, 16)
+            setPadding(0, dp(4), 0, 0)
+            setTextColor(col(R.color.text_dim))
         })
+        root.addView(torCard, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+
+        // Chain list
+        root.addView(TextView(this).apply {
+            text = "PROXY CHAIN"
+            textSize = 12f
+            letterSpacing = 0.1f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(4), dp(20), 0, dp(8))
+            setTextColor(col(R.color.purple_light))
+        })
+
+        emptyText = TextView(this).apply {
+            text = "No proxies added yet. Long-press a hop to move or remove it."
+            textSize = 14f
+            setPadding(dp(4), 0, 0, dp(8))
+            setTextColor(col(R.color.text_dim))
+        }
+        root.addView(emptyText)
 
         adapter = ProxyAdapter(chain) { pos -> showHopMenu(pos) }
         val recycler = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = this@MainActivity.adapter
+            clipToPadding = false
         }
         root.addView(recycler, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        root.addView(Button(this).apply {
-            text = "Add private / custom proxy"
-            setOnClickListener { showAddProxyDialog() }
-        })
-
-        root.addView(Button(this).apply {
-            text = "Add free open-source proxy preset"
-            setOnClickListener { showPresetDialog() }
-        })
-
-        root.addView(Button(this).apply {
-            text = "Connect"
-            setOnClickListener { onConnectClicked() }
-        })
-
-        root.addView(Button(this).apply {
-            text = "Disconnect"
-            setOnClickListener {
-                stopService(Intent(this@MainActivity, TorVpnService::class.java))
-                statusText.text = "Status: disconnected"
-            }
-        })
+        // Bottom actions
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(12), 0, 0)
+        }
+        actions.addView(
+            pillButton("Add proxy", col(R.color.purple), col(R.color.text)) { showAddProxyDialog() },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(8) }
+        )
+        actions.addView(
+            pillButton("Preset", col(R.color.surface_high), col(R.color.text)) { showPresetDialog() },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) }
+        )
+        root.addView(actions)
 
         setContentView(root)
+        updateEmpty()
+        refreshStatus()
     }
 
     override fun onResume() {
@@ -127,6 +228,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---- connect / status ----
+
+    private fun onOrbClicked() {
+        when (TorVpnService.state) {
+            TorVpnService.State.RUNNING, TorVpnService.State.STARTING -> {
+                stopService(Intent(this, TorVpnService::class.java))
+                refreshStatus()
+            }
+            else -> {
+                permissionDenied = false
+                onConnectClicked()
+            }
+        }
+    }
 
     private fun onConnectClicked() {
         if (torSwitch.isChecked && !OrbotManager.isOrbotInstalled(this)) {
@@ -149,18 +263,55 @@ class MainActivity : AppCompatActivity() {
 
     private fun startVpnService() {
         ContextCompat.startForegroundService(this, Intent(this, TorVpnService::class.java))
-        statusText.text = "Status: starting…"
+        refreshStatus()
+    }
+
+    private fun chainSummary(): String {
+        val parts = (if (torSwitch.isChecked) listOf("Tor") else emptyList()) + chain.map { it.label }
+        return if (parts.isEmpty()) "Direct connection" else parts.joinToString(" \u2192 ")
     }
 
     private fun refreshStatus() {
-        statusText.text = when (TorVpnService.state) {
-            TorVpnService.State.STOPPED -> "Status: disconnected"
-            TorVpnService.State.STARTING ->
-                if (torSwitch.isChecked) "Status: starting (waiting for Tor, can take a minute)…"
-                else "Status: starting…"
-            TorVpnService.State.RUNNING -> "Status: connected"
-            TorVpnService.State.ERROR -> "Status: error - ${TorVpnService.lastError ?: "unknown"}"
+        when (TorVpnService.state) {
+            TorVpnService.State.STOPPED -> {
+                if (permissionDenied) {
+                    statusText.text = "VPN permission denied"
+                    subText.text = "Allow the VPN request to continue"
+                } else {
+                    statusText.text = "Not connected"
+                    subText.text = "Tap the button to start"
+                }
+                orb.text = "START"
+                orb.setTextColor(col(R.color.text))
+                orb.background = ovalBg(col(R.color.surface_high), col(R.color.purple))
+            }
+            TorVpnService.State.STARTING -> {
+                statusText.text = "Connecting\u2026"
+                subText.text =
+                    if (torSwitch.isChecked) "Waiting for Tor, this can take a minute" else "Starting\u2026"
+                orb.text = "CANCEL"
+                orb.setTextColor(col(R.color.amber))
+                orb.background = ovalBg(col(R.color.surface_high), col(R.color.amber))
+            }
+            TorVpnService.State.RUNNING -> {
+                statusText.text = "Connected"
+                subText.text = chainSummary()
+                orb.text = "STOP"
+                orb.setTextColor(col(R.color.text))
+                orb.background = ovalBg(col(R.color.purple), col(R.color.green))
+            }
+            TorVpnService.State.ERROR -> {
+                statusText.text = "Connection error"
+                subText.text = TorVpnService.lastError ?: "unknown"
+                orb.text = "RETRY"
+                orb.setTextColor(col(R.color.red))
+                orb.background = ovalBg(col(R.color.surface_high), col(R.color.red))
+            }
         }
+    }
+
+    private fun updateEmpty() {
+        emptyText.visibility = if (chain.isEmpty()) View.VISIBLE else View.GONE
     }
 
     /** Saves the full chain (Tor first if enabled) so the service sees exactly what the UI shows. */
@@ -182,6 +333,7 @@ class MainActivity : AppCompatActivity() {
                     2 -> chain.removeAt(pos)
                 }
                 adapter.notifyDataSetChanged()
+                updateEmpty()
                 persist()
             }
             .show()
@@ -190,7 +342,7 @@ class MainActivity : AppCompatActivity() {
     private fun showAddProxyDialog() {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(40, 20, 40, 20)
+            setPadding(dp(20), dp(10), dp(20), dp(10))
         }
         val label = EditText(this).apply { hint = "Label (e.g. My VPS)" }
         val host = EditText(this).apply { hint = "Host / IP" }
@@ -226,6 +378,7 @@ class MainActivity : AppCompatActivity() {
                 )
             )
             adapter.notifyDataSetChanged()
+            updateEmpty()
             persist()
         }
     }
@@ -235,7 +388,7 @@ class MainActivity : AppCompatActivity() {
         // (logging / injecting into your traffic). Wire this to a source you trust, or skip it.
         Toast.makeText(
             this,
-            "Hook this button up to a proxy-list provider you trust, or use 'Add private / custom proxy'.",
+            "Hook this button up to a proxy-list provider you trust, or use 'Add proxy'.",
             Toast.LENGTH_LONG
         ).show()
     }
@@ -248,19 +401,28 @@ class ProxyAdapter(
     class VH(val tv: TextView) : RecyclerView.ViewHolder(tv)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
-        val tv = TextView(parent.context).apply {
-            setPadding(24, 24, 24, 24)
+        val ctx = parent.context
+        val d = ctx.resources.displayMetrics.density
+        val tv = TextView(ctx).apply {
+            val pad = (16 * d).toInt()
+            setPadding(pad, pad, pad, pad)
             textSize = 15f
-            layoutParams = ViewGroup.LayoutParams(
+            setTextColor(ContextCompat.getColor(ctx, R.color.text))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(ContextCompat.getColor(ctx, R.color.surface))
+                cornerRadius = 16 * d
+            }
+            layoutParams = RecyclerView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+            ).apply { setMargins(0, (4 * d).toInt(), 0, (4 * d).toInt()) }
         }
         return VH(tv)
     }
 
     override fun onBindViewHolder(holder: VH, position: Int) {
         val hop = items[position]
-        holder.tv.text = "${position + 1}. ${hop.label} — ${hop.type} ${hop.host}:${hop.port}"
+        holder.tv.text = "${position + 1}. ${hop.label}\n${hop.type} ${hop.host}:${hop.port}"
         // Use the live adapter position: `position` is stale after items are moved or removed.
         holder.tv.setOnLongClickListener {
             val pos = holder.bindingAdapterPosition
