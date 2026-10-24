@@ -1,0 +1,41 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # hev-socks5-tunnel is used as a JNI library; build it for all ABIs with the runner's NDK.
+      - name: Build hev-socks5-tunnel
+        run: |
+          set -e
+          mkdir -p /tmp/hev
+          git clone --recursive https://github.com/heiher/hev-socks5-tunnel /tmp/hev/jni
+          cd /tmp/hev
+          "$ANDROID_NDK_HOME/ndk-build"
+          mkdir -p "$GITHUB_WORKSPACE/app/src/main/jniLibs"
+          cp -r libs/* "$GITHUB_WORKSPACE/app/src/main/jniLibs/"
+          find "$GITHUB_WORKSPACE/app/src/main/jniLibs" -type f
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Assemble debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
