@@ -118,24 +118,25 @@ class ProxyChainSocksServer(
 
             if (cmd != 0x01) { replyFailure(output, 0x07); return } // only CONNECT
 
-            upstream = try {
+            val up: Socket = try {
                 connectThroughChain(getChain(), destHost, destPort)
             } catch (e: Exception) {
                 onLog("Chain connect failed for $destHost:$destPort -> ${e.message}")
                 replyFailure(output, 0x05) // connection refused
                 return
             }
-            open.add(upstream)
+            upstream = up
+            open.add(up)
 
             // Handshake over: from here on connections may legitimately sit idle.
             client.soTimeout = 0
-            upstream.soTimeout = 0
+            up.soTimeout = 0
 
             output.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
             output.flush()
 
             relayed = true
-            relay(client, upstream)
+            relay(client, up)
         } catch (e: Exception) {
             onLog("Client handling error: ${e.message}")
         } finally {
